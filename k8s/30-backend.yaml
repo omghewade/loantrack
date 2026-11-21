@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: loantrack
+  labels: { app.kubernetes.io/name: backend, app.kubernetes.io/part-of: loantrack }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: backend }
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: loantrack
+  labels: { app.kubernetes.io/name: backend, app.kubernetes.io/part-of: loantrack }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # one extra pod during a rollout
+      maxUnavailable: 0    # never drop below the desired count -> no downtime mid-rollout
+  selector:
+    matchLabels: { app.kubernetes.io/name: backend }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: backend, app.kubernetes.io/part-of: loantrack }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: backend
+          image: loantrack-backend:v1
+          imagePullPolicy: IfNotPresent   # images are built straight into minikube
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef: { name: loantrack-config }
+          env:
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: loantrack-db, key: POSTGRES_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: loantrack-db, key: POSTGRES_PASSWORD } }
+            - name: INSTANCE_NAME     # pod name, returned in X-Served-By
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          # Startup: the process is usually up in ~2s; allow up to 30s before liveness takes over.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 15
+          # Liveness only checks the process. If it checked the DB, a DB outage would make
+          # Kubernetes restart every healthy backend pod and turn one failure into many.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Readiness checks the DB: a pod that cannot reach Postgres is taken out of the
+          # Service endpoints (stops getting traffic) but is not restarted.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              # Let the endpoint removal propagate before uvicorn stops accepting requests.
+              exec: { command: ["sleep", "5"] }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
