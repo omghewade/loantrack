@@ -1,0 +1,182 @@
+## D3 - DNS from a backend pod
+
+$ kubectl -n loantrack exec deploy/backend -- python -c "import socket; print(socket.getfqdn('postgres')); print(socket.gethostbyname('postgres.loantrack.svc.cluster.local'))"
+postgres.loantrack.svc.cluster.local
+10.104.101.70
+
+$ kubectl -n loantrack exec deploy/backend -- python -c "import socket; s=socket.create_connection(('postgres.loantrack.svc.cluster.local',5432),3); print('connected to', s.getpeername()); s.close()"
+connected to ('10.104.101.70', 5432)
+
+$ kubectl -n loantrack get svc
+NAME                TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+backend             ClusterIP   10.105.253.231   <none>        8000/TCP       18m
+frontend            NodePort    10.102.152.235   <none>        80:30080/TCP   18m
+postgres            ClusterIP   10.104.101.70    <none>        5432/TCP       19m
+postgres-headless   ClusterIP   None             <none>        5432/TCP       19m
+
+## D4 - add a loan via the API, then scale backend to 3
+
+$ curl -s -X POST http://192.168.49.2:30080/api/loans -H 'content-type: application/json' -d '{"borrower_name":"Rahul Verma","loan_amount":"6750000.00","property_city":"Indore"}'
+{"id":12,"borrower_name":"Rahul Verma","loan_amount":"6750000.00","property_city":"Indore","status":"PENDING","created_at":"2026-11-21T06:12:03.512334Z","updated_at":"2026-11-21T06:12:03.512334Z"}
+$ kubectl -n loantrack scale deployment/backend --replicas=3
+deployment.apps/backend scaled
+
+$ kubectl -n loantrack rollout status deployment/backend --timeout=120s
+Waiting for deployment "backend" rollout to finish: 2 of 3 updated replicas are available...
+deployment "backend" successfully rolled out
+
+$ kubectl -n loantrack get pods -l app.kubernetes.io/name=backend
+NAME                       READY   STATUS    RESTARTS   AGE
+backend-7f9ffbc6bd-9pxhf   1/1     Running   0          58s
+backend-7f9ffbc6bd-ww5zs   1/1     Running   0          5s
+backend-7f9ffbc6bd-z9czt   1/1     Running   0          53s
+
+$ # 12 requests through the NodePort, grouped by the pod that answered
+      4 backend-7f9ffbc6bd-9pxhf v1
+      3 backend-7f9ffbc6bd-ww5zs v1
+      5 backend-7f9ffbc6bd-z9czt v1
+
+## D4 - rolling update to v2, then rollback
+
+$ kubectl -n loantrack set image deployment/backend backend=loantrack-backend:v2
+deployment.apps/backend image updated
+
+$ kubectl -n loantrack rollout status deployment/backend --timeout=180s
+Waiting for deployment "backend" rollout to finish: 1 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 1 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 1 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "backend" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "backend" rollout to finish: 1 old replicas are pending termination...
+deployment "backend" successfully rolled out
+
+$ # versions now serving
+      3 backend-7f9ffbc6bd-z9czt v1
+      2 backend-86b84dbddc-8sfrm v2
+      3 backend-86b84dbddc-fv4fs v2
+      4 backend-86b84dbddc-kzvrz v2
+
+$ kubectl -n loantrack rollout history deployment/backend
+deployment.apps/backend 
+REVISION  CHANGE-CAUSE
+7         <none>
+8         <none>
+9         <none>
+10        <none>
+11        <none>
+12        <none>
+
+
+$ kubectl -n loantrack rollout undo deployment/backend
+Warning: resource deployments/backend was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead.
+deployment.apps/backend rolled back
+
+$ kubectl -n loantrack rollout status deployment/backend --timeout=180s
+Waiting for deployment "backend" rollout to finish: 1 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 1 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 1 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "backend" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "backend" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "backend" rollout to finish: 1 old replicas are pending termination...
+deployment "backend" successfully rolled out
+
+$ # versions after undo
+      2 backend-7f9ffbc6bd-gnhjz v1
+      4 backend-7f9ffbc6bd-q8tnb v1
+      3 backend-7f9ffbc6bd-wswql v1
+      3 backend-86b84dbddc-8sfrm v2
+
+## D4 - delete a backend pod
+
+$ kubectl -n loantrack get pods -l app.kubernetes.io/name=backend
+NAME                       READY   STATUS    RESTARTS   AGE
+backend-7f9ffbc6bd-gnhjz   1/1     Running   0          15s
+backend-7f9ffbc6bd-q8tnb   1/1     Running   0          19s
+backend-7f9ffbc6bd-wswql   1/1     Running   0          11s
+
+$ kubectl -n loantrack delete pod backend-7f9ffbc6bd-gnhjz
+pod "backend-7f9ffbc6bd-gnhjz" deleted from loantrack namespace
+
+$ kubectl -n loantrack rollout status deployment/backend --timeout=120s
+deployment "backend" successfully rolled out
+
+$ kubectl -n loantrack get pods -l app.kubernetes.io/name=backend
+NAME                       READY   STATUS    RESTARTS   AGE
+backend-7f9ffbc6bd-q8tnb   1/1     Running   0          26s
+backend-7f9ffbc6bd-vft5t   1/1     Running   0          6s
+backend-7f9ffbc6bd-wswql   1/1     Running   0          18s
+
+## D4 - delete the PostgreSQL pod, rows survive
+
+$ # rows before
+12
+
+$ kubectl -n loantrack delete pod postgres-0
+pod "postgres-0" deleted from loantrack namespace
+
+$ kubectl -n loantrack wait --for=condition=Ready pod/postgres-0 --timeout=180s
+pod/postgres-0 condition met
+
+$ # rows after
+12
+
+$ kubectl -n loantrack get pvc
+NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+data-postgres-0   Bound    pvc-5c7cb56f-7db7-4613-88e9-05f891eadf50   1Gi        RWO            standard       <unset>                 20m
+
+## D4 - inventory
+
+$ kubectl get all -n loantrack
+NAME                            READY   STATUS    RESTARTS   AGE
+pod/backend-7f9ffbc6bd-q8tnb    1/1     Running   0          34s
+pod/backend-7f9ffbc6bd-vft5t    1/1     Running   0          14s
+pod/backend-7f9ffbc6bd-wswql    1/1     Running   0          26s
+pod/frontend-767cff7fb4-7zxjb   1/1     Running   0          116s
+pod/frontend-767cff7fb4-lhrhz   1/1     Running   0          111s
+pod/postgres-0                  1/1     Running   0          7s
+
+NAME                        TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+service/backend             ClusterIP   10.105.253.231   <none>        8000/TCP       19m
+service/frontend            NodePort    10.102.152.235   <none>        80:30080/TCP   19m
+service/postgres            ClusterIP   10.104.101.70    <none>        5432/TCP       20m
+service/postgres-headless   ClusterIP   None             <none>        5432/TCP       20m
+
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/backend    3/3     3            3           19m
+deployment.apps/frontend   2/2     2            2           19m
+
+NAME                                  DESIRED   CURRENT   READY   AGE
+replicaset.apps/backend-54bb4457bc    0         0         0       2m49s
+replicaset.apps/backend-56b6969875    0         0         0       3m21s
+replicaset.apps/backend-6d79d559f5    0         0         0       4m23s
+replicaset.apps/backend-7f9ffbc6bd    3         3         3       117s
+replicaset.apps/backend-86b84dbddc    0         0         0       49s
+replicaset.apps/backend-9ddb746df     0         0         0       5m14s
+replicaset.apps/frontend-579dc7557d   0         0         0       4m23s
+replicaset.apps/frontend-767cff7fb4   2         2         2       116s
+replicaset.apps/frontend-76b769476c   0         0         0       3m21s
+replicaset.apps/frontend-788d7c6787   0         0         0       5m13s
+replicaset.apps/frontend-859b67b77c   0         0         0       5m50s
+replicaset.apps/frontend-885ff75f6    0         0         0       2m49s
+
+NAME                        READY   AGE
+statefulset.apps/postgres   1/1     20m
+
+$ kubectl get pvc,configmap,secret -n loantrack
+NAME                                    STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/data-postgres-0   Bound    pvc-5c7cb56f-7db7-4613-88e9-05f891eadf50   1Gi        RWO            standard       <unset>                 20m
+
+NAME                         DATA   AGE
+configmap/db-init            2      20m
+configmap/kube-root-ca.crt   1      20m
+configmap/loantrack-config   9      20m
+
+NAME                  TYPE     DATA   AGE
+secret/loantrack-db   Opaque   2      20m
