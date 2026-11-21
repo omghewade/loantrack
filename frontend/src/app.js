@@ -112,6 +112,17 @@ async function api(path, { method = "GET", body } = {}) {
   return data;
 }
 
+// ---------------------------------------------------------------- animated bars
+// Bars are rebuilt on every refresh; remembering each bar's last width lets it glide from
+// there to the new value instead of collapsing to 0 and regrowing every 10 seconds.
+const barWidths = new Map();
+function barFill(key, percent) {
+  const fill = h("span", { class: "fill", style: { width: `${barWidths.get(key) ?? 0}%` } });
+  barWidths.set(key, percent);
+  requestAnimationFrame(() => requestAnimationFrame(() => (fill.style.width = `${percent}%`)));
+  return fill;
+}
+
 // ---------------------------------------------------------------- replica tracker
 function trackReplica(name, version) {
   if (!name) return;
@@ -128,8 +139,7 @@ function renderReplicas() {
   const total = entries.reduce((sum, [, n]) => sum + n, 0) || 1;
   list.replaceChildren(
     ...entries.map(([name, n]) => {
-      const fill = h("span", { class: "fill" });
-      requestAnimationFrame(() => (fill.style.width = `${(n / total) * 100}%`));
+      const fill = barFill(`replica:${name}`, (n / total) * 100);
       return h("li", {}, h("span", { class: "name", title: name }, name), h("span", { class: "track" }, fill), h("span", { class: "amount" }, `${n} · ${Math.round((n / total) * 100)}%`));
     }),
   );
@@ -265,8 +275,7 @@ function renderCityBars(stats) {
   const max = Math.max(...stats.top_cities.map((c) => Number(c.total_amount)), 1);
   $("#city-bars").replaceChildren(
     ...stats.top_cities.map((c) => {
-      const fill = h("span", { class: "fill" });
-      requestAnimationFrame(() => (fill.style.width = `${(Number(c.total_amount) / max) * 100}%`));
+      const fill = barFill(`city:${c.city}`, (Number(c.total_amount) / max) * 100);
       return h("li", { title: `${c.count} loan(s)` }, h("span", {}, c.city), h("span", { class: "track" }, fill), h("span", { class: "amount" }, compactINR(c.total_amount)));
     }),
   );
