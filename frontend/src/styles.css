@@ -137,10 +137,16 @@ kbd {
   .layout { grid-template-areas: "kpi kpi kpi kpi kpi kpi kpi kpi kpi kpi kpi kpi" "st st st st st st ct ct ct ct ct ct" "tb tb tb tb tb tb tb tb tb tb tb tb" "sd sd sd sd sd sd sd sd sd sd sd sd"; }
   .side { display: grid; grid-template-columns: 1fr 1fr; }
 }
+/* Grid items default to min-width:auto, so the 640px table would stretch a 1fr track past the
+   viewport on phones. minmax(0, 1fr) + min-width:0 lets the table scroll inside its card instead. */
+.layout > *, .kpis > *, .side > * { min-width: 0; }
 @media (max-width: 720px) {
-  .layout { grid-template-columns: 1fr; grid-template-areas: "kpi" "st" "ct" "tb" "sd"; }
-  .kpis { grid-template-columns: 1fr 1fr; }
-  .side { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "kpi" "st" "ct" "tb" "sd"; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .side { grid-template-columns: minmax(0, 1fr); }
+  .kpi { padding: 14px; }
+  .toolbar input[type="search"] { width: 100%; }
+  .toolbar .search { flex: 1 1 100%; }
   .topbar-right .pill.subtle { display: none; }
 }
 
