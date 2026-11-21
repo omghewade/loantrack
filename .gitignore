@@ -1,0 +1,31 @@
+# --- secrets: never commit real credentials ---
+.env
+.env.*
+!.env.example
+k8s/secret.yaml
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- node / build output ---
+node_modules/
+dist/
+build/
+
+# --- local database data ---
+pgdata/
+*.dump
+
+# --- editors / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
