@@ -1,17 +1,86 @@
-# LoanTrack
+<div align="center">
 
-A three-tier home-loan tracker (browser → nginx frontend → FastAPI backend → PostgreSQL), packaged
-with Docker Compose and deployed to a local Kubernetes cluster (minikube). Borrowers, cities and
-amounts are Indian; money is shown in rupees with Indian digit grouping (₹1,50,00,000.00 · 1.5 crore).
+# 🏦 LoanTrack
 
-The application code is deliberately small. The point of the repo is how the system is packaged,
-wired, configured, deployed, operated and documented.
+**A three-tier home-loan tracker, packaged with Docker Compose and run on Kubernetes.**
+
+Browser → nginx frontend → FastAPI backend → PostgreSQL · Indian borrowers · amounts in ₹ with lakh / crore
+
+[![ci](https://github.com/omghewade/loantrack/actions/workflows/ci.yml/badge.svg)](https://github.com/omghewade/loantrack/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![nginx](https://img.shields.io/badge/nginx-1.27-009639?logo=nginx&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker_Compose-2.40-2496ED?logo=docker&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-1.37-326CE5?logo=kubernetes&logoColor=white)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/compose-dashboard-dark.png">
+  <img alt="LoanTrack dashboard: KPI tiles, status donut, loans by city, loans table and EMI calculator" src="docs/screenshots/compose-dashboard-light.png" width="100%">
+</picture>
+
+<sub>The dashboard follows your GitHub theme: light or dark.</sub>
+
+[Quick start](#-quick-start) · [Screenshots](#-screenshots) · [Architecture](#architecture) · [Kubernetes](#run-on-kubernetes-minikube) · [Design decisions](#design-decisions)
+
+</div>
+
+---
+
+## ✨ What it does
+
+| | |
+|---|---|
+| 📋 **Track loans** | Add borrowers, search live, filter by status, change status inline (Pending → Approved → Disbursed / Rejected). |
+| 📊 **Live dashboard** | KPI tiles that count up, a status donut, loans by city, approval rate. Refreshes every 10 s. |
+| 🧮 **EMI calculator** | Monthly instalment, total interest and total payable, with amounts in words (e.g. 1.5 crore). |
+| 🔀 **Served by panel** | Shows which backend pod answered each request, so you can see load spread across replicas. |
+| 🌗 **Dark mode and shortcuts** | `/` search · `N` new loan · `R` refresh · `T` theme. Works on narrow screens. |
+| 🇮🇳 **Indian formatting** | ₹1,50,00,000.00 digit grouping, lakh / crore in words, times in IST. |
+
+## 🛠 Under the hood
+
+- **Docker Compose:** one command runs all three tiers with healthchecks, a private network and a named volume. The database has no host port.
+- **Kubernetes (minikube):** Postgres as a StatefulSet with a PVC, backend at 2–3 replicas, rolling updates with zero downtime, liveness / readiness / startup probes, resource limits, ConfigMap and Secret.
+- **Resilient backend:** connection pool, startup retry with exponential backoff, `/healthz` vs `/readyz`, money stored as `NUMERIC` / `Decimal` and never as float.
+- **Hardened containers:** non-root users, read-only root filesystems, multi-stage builds (backend image 245 MB), strict Content-Security-Policy.
+- **One-command deploy:** [`scripts/deploy.sh`](scripts/deploy.sh) is idempotent; re-running it with nothing changed rolls nothing.
+- **CI:** ruff lint, 20 pytest tests, Docker builds and an image-size check on every PR.
+
+## 🚀 Quick start
+
+```bash
+git clone https://github.com/omghewade/loantrack.git && cd loantrack
+cp .env.example .env            # then change POSTGRES_PASSWORD
+docker compose up -d            # open http://localhost:8080
+```
+
+On Kubernetes: `./scripts/deploy.sh` (or `make deploy`). Full steps are [below](#run-on-kubernetes-minikube).
+
+## 📸 Screenshots
+
+**Kubernetes, three backend replicas.** The *Served by* tab shows requests spread over three pods:
 
 ![Dashboard on Kubernetes - requests spread over three backend pods](docs/screenshots/kubernetes-dashboard.png)
 
-| Dark mode (Compose) | Narrow screen (Kubernetes) | New-loan drawer |
-|---|---|---|
-| ![](docs/screenshots/compose-dashboard-dark.png) | ![](docs/screenshots/kubernetes-narrow-dark.png) | ![](docs/screenshots/compose-new-loan-drawer.jpg) |
+<table>
+  <tr>
+    <th width="33%">Light mode</th>
+    <th width="33%">Dark mode</th>
+    <th width="33%">Narrow screen</th>
+  </tr>
+  <tr>
+    <td><img alt="Dashboard in light mode" src="docs/screenshots/compose-dashboard-light.png"></td>
+    <td><img alt="Dashboard in dark mode" src="docs/screenshots/compose-dashboard-dark.png"></td>
+    <td><img alt="Dashboard on a narrow screen in dark mode" src="docs/screenshots/kubernetes-narrow-dark.png"></td>
+  </tr>
+</table>
+
+**New-loan drawer**, with validation and the amount shown in words as you type:
+
+<img alt="New loan drawer" src="docs/screenshots/compose-new-loan-drawer.jpg" width="70%">
+
+---
 
 ## Contents
 
