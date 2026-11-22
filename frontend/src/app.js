@@ -6,7 +6,7 @@
 const API = "/api";
 const STATUSES = ["PENDING", "APPROVED", "REJECTED", "DISBURSED"];
 const STATUS_LABEL = { PENDING: "Pending", APPROVED: "Approved", REJECTED: "Rejected", DISBURSED: "Disbursed" };
-const STATUS_COLOR = { PENDING: "--pending", APPROVED: "--approved", REJECTED: "--rejected", DISBURSED: "--disbursed" };
+const STATUS_COLOR = { PENDING: "--chart-1", APPROVED: "--chart-2", REJECTED: "--chart-3", DISBURSED: "--chart-4" };
 const REFRESH_MS = 10_000;
 
 // ---------------------------------------------------------------- formatting (Indian conventions)
@@ -70,7 +70,65 @@ function s(tag, attrs = {}) {
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
   return el;
 }
+// Theme tokens are stored as bare HSL components ("38 92% 50%"), shadcn-style.
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const statusColor = (st) => `hsl(${cssVar(STATUS_COLOR[st])})`;
+function icon(name) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "icon");
+  const use = document.createElementNS(SVG_NS, "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+// ---------------------------------------------------------------- tabs with a sliding indicator
+// Positions the pill behind the selected trigger; CSS transitions make it glide between tabs.
+function moveIndicator(list) {
+  const indicator = list.querySelector(".tabs-indicator");
+  const active = list.querySelector('[aria-selected="true"]');
+  if (!indicator || !active) return;
+  indicator.style.width = `${active.offsetWidth}px`;
+  indicator.style.transform = `translateX(${active.offsetLeft}px)`;
+}
+
+// Roving tabindex + arrow keys, as in the WAI-ARIA tabs pattern.
+function tabKeyboard(list, onSelect) {
+  list.addEventListener("keydown", (e) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    const tabs = [...list.querySelectorAll('[role="tab"]')];
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    e.preventDefault();
+    const next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[next].focus();
+    onSelect(tabs[next]);
+  });
+}
+
+function selectToolTab(tab) {
+  const list = $("#tool-tabs");
+  const hash = tab.id === "tab-replicas" ? "#served-by" : "";
+  if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname + location.search);
+  for (const t of list.querySelectorAll('[role="tab"]')) {
+    const on = t === tab;
+    t.setAttribute("aria-selected", String(on));
+    t.tabIndex = on ? 0 : -1;
+    document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+  }
+  moveIndicator(list);
+}
+
+// ---------------------------------------------------------------- card spotlight (cursor-following glow)
+function initSpotlight() {
+  for (const card of document.querySelectorAll(".spotlight")) {
+    card.addEventListener("pointermove", (e) => {
+      const r = card.getBoundingClientRect();
+      card.style.setProperty("--mx", `${e.clientX - r.left}px`);
+      card.style.setProperty("--my", `${e.clientY - r.top}px`);
+    });
+  }
+}
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -148,15 +206,18 @@ function renderReplicas() {
 
 // ---------------------------------------------------------------- toasts & banner
 function toast(message, kind = "info") {
-  const el = h("div", { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status" }, message);
+  const el = h("li", { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status" }, icon(kind === "error" ? "alert" : "check"), h("span", {}, message));
   $("#toasts").append(el);
-  setTimeout(() => el.remove(), 4200);
+  setTimeout(() => {
+    el.classList.add("leaving");
+    el.addEventListener("animationend", () => el.remove(), { once: true });
+  }, 4000);
 }
 
 function setBanner(message) {
   const banner = $("#error-banner");
   banner.hidden = !message;
-  banner.textContent = message ?? "";
+  banner.querySelector(".alert-text").textContent = message ?? "";
 }
 
 // ---------------------------------------------------------------- readiness pill
@@ -207,6 +268,7 @@ function renderKpis(stats) {
   $("#kpi-total-words").textContent = inr2.format(next.total);
   $("#kpi-average-words").textContent = `≈ ${inWords(next.average)} per loan`;
   $("#kpi-pending").textContent = `${count("PENDING")} awaiting decision`;
+  $("#kpi-approval-bar").style.width = `${approval}%`;
   state.kpi = next;
 }
 
@@ -217,7 +279,7 @@ function renderStatusChart(stats) {
   const r = 45;
   const circumference = 2 * Math.PI * r;
   const group = s("g", { transform: "rotate(-90 60 60)" });
-  group.append(s("circle", { cx: 60, cy: 60, r, fill: "none", stroke: cssVar("--surface-2"), "stroke-width": 16 }));
+  group.append(s("circle", { cx: 60, cy: 60, r, fill: "none", stroke: `hsl(${cssVar("--muted")})`, "stroke-width": 14 }));
 
   let offset = 0;
   for (const st of STATUSES) {
@@ -228,7 +290,7 @@ function renderStatusChart(stats) {
     const slice = s("circle", {
       class: `slice${state.status === st ? " active" : ""}`,
       cx: 60, cy: 60, r,
-      stroke: cssVar(STATUS_COLOR[st]),
+      stroke: statusColor(st),
       "stroke-dasharray": `${Math.max(len - 1.5, 0.5)} ${circumference}`,
       "stroke-dashoffset": -offset,
       tabindex: 0,
@@ -256,19 +318,35 @@ function renderStatusChart(stats) {
       return h(
         "li",
         { onclick: () => setStatusFilter(state.status === st ? null : st), title: "Filter the table" },
-        h("span", { class: "swatch", style: { background: cssVar(STATUS_COLOR[st]) } }),
+        h("span", { class: "swatch", style: { background: statusColor(st) } }),
         STATUS_LABEL[st],
         h("span", { class: "val" }, `${bucket?.count ?? 0} · ${compactINR(bucket?.total_amount ?? 0)}`),
       );
     }),
   );
 
-  const chip = (st, label, n) =>
-    h("button", { type: "button", class: "chip", "aria-pressed": String(state.status === st), onclick: () => setStatusFilter(st) }, label, h("span", { class: "n" }, n));
-  $("#status-chips").replaceChildren(
-    chip(null, "All", stats.total_count),
-    ...STATUSES.map((st) => chip(st, STATUS_LABEL[st], stats.by_status.find((b) => b.status === st)?.count ?? 0)),
+  // Status filter rendered as a pill tab list; the indicator node is kept so it can glide.
+  const list = $("#status-chips");
+  const tab = (st, label, n) =>
+    h(
+      "button",
+      {
+        type: "button", role: "tab", class: "tabs-trigger", "data-status": st ?? "",
+        "aria-selected": String(state.status === st), tabindex: state.status === st ? 0 : -1,
+        onclick: () => setStatusFilter(st),
+      },
+      st ? h("span", { class: "swatch", style: { background: statusColor(st) } }) : null,
+      label,
+      h("span", { class: "count" }, n),
+    );
+  const hadFocus = list.contains(document.activeElement);
+  list.replaceChildren(
+    list.querySelector(".tabs-indicator") ?? h("span", { class: "tabs-indicator", "aria-hidden": "true" }),
+    tab(null, "All", stats.total_count),
+    ...STATUSES.map((st) => tab(st, STATUS_LABEL[st], stats.by_status.find((b) => b.status === st)?.count ?? 0)),
   );
+  moveIndicator(list);
+  if (hadFocus) list.querySelector('[aria-selected="true"]')?.focus();
 }
 
 function renderCityBars(stats) {
@@ -317,7 +395,7 @@ function loanRow(loan) {
     h("td", { class: "num" }, h("div", { class: "amount-main" }, inr2.format(Number(loan.loan_amount))), h("div", { class: "amount-words" }, inWords(loan.loan_amount))),
     h("td", {}, statusSelect(loan)),
     h("td", { class: "when", title: `${dateFmt.format(created)}, ${timeFmt.format(created)} IST` }, dateFmt.format(created), h("small", {}, relativeTime(loan.created_at))),
-    h("td", { class: "num" }, h("button", { type: "button", class: "row-action", onclick: () => useInEmi(loan), title: "Open in EMI calculator" }, "EMI")),
+    h("td", { class: "num" }, h("button", { type: "button", class: "btn btn-outline btn-sm", onclick: () => useInEmi(loan), title: "Open in EMI calculator" }, icon("calc"), "EMI")),
   );
   const isNewElsewhere = state.knownIds && !state.knownIds.has(loan.id);
   if (loan.id === state.highlightId || isNewElsewhere) row.classList.add("fresh");
@@ -417,12 +495,17 @@ function renderEmi() {
   const rate = Number($("#emi-rate").value);
   const years = Number($("#emi-years").value);
   const monthly = emi(amount, rate, years);
+  for (const slider of document.querySelectorAll("#emi-form .slider")) {
+    const pct = ((slider.value - slider.min) / (slider.max - slider.min)) * 100;
+    slider.style.setProperty("--fill", `${pct}%`);
+  }
   const total = monthly * years * 12;
   const interest = total - amount;
   $("#emi-amount-out").textContent = `${inr0.format(amount)} (${inWords(amount)})`;
   $("#emi-rate-out").textContent = `${rate.toFixed(2)}% p.a.`;
   $("#emi-years-out").textContent = `${years} ${years === 1 ? "year" : "years"}`;
   $("#emi-monthly").textContent = inr0.format(monthly);
+  $("#emi-principal").textContent = compactINR(amount);
   $("#emi-interest").textContent = compactINR(interest);
   $("#emi-total").textContent = compactINR(total);
   $("#emi-split").style.width = `${(amount / total) * 100}%`;
@@ -433,9 +516,10 @@ function useInEmi(loan) {
   const slider = $("#emi-amount");
   const amount = Math.min(Number(slider.max), Math.max(Number(slider.min), Number(loan.loan_amount)));
   slider.value = String(amount);
-  $("#emi-for").textContent = `for ${loan.borrower_name}`;
+  $("#emi-for").textContent = `Showing EMI for ${loan.borrower_name} (${inr0.format(Number(loan.loan_amount))}).`;
+  selectToolTab($("#tab-emi"));
   renderEmi();
-  $("#emi-title").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#tool-tabs").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // ---------------------------------------------------------------- new-loan drawer
@@ -561,6 +645,16 @@ function debounce(fn, ms) {
 function init() {
   try { applyTheme(localStorage.getItem("loantrack-theme")); } catch { /* ignore */ }
   buildStatusSegment();
+  initSpotlight();
+  const toolTabs = $("#tool-tabs");
+  toolTabs.querySelectorAll('[role="tab"]').forEach((t) => t.addEventListener("click", () => selectToolTab(t)));
+  tabKeyboard(toolTabs, selectToolTab);
+  tabKeyboard($("#status-chips"), (t) => setStatusFilter(t.dataset.status || null));
+  // Deep link: /#served-by opens the replica tracker (handy when demoing scaling).
+  const openFromHash = () => selectToolTab(location.hash === "#served-by" ? $("#tab-replicas") : $("#tab-emi"));
+  addEventListener("hashchange", openFromHash);
+  requestAnimationFrame(openFromHash);
+  addEventListener("resize", () => document.querySelectorAll(".tabs-list").forEach(moveIndicator));
   renderReplicas();
   renderEmi();
   renderSkeleton();
@@ -578,7 +672,7 @@ function init() {
   $("#theme-toggle").addEventListener("click", toggleTheme);
   $("#replica-reset").addEventListener("click", () => { state.replicas.clear(); renderReplicas(); });
   ["#emi-amount", "#emi-rate", "#emi-years"].forEach((id) => $(id).addEventListener("input", () => {
-    if (id === "#emi-amount") $("#emi-for").textContent = " ";
+    if (id === "#emi-amount") $("#emi-for").textContent = "Drag the sliders, or press EMI on any row.";
     renderEmi();
   }));
 
