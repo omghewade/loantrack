@@ -1,0 +1,156 @@
+## B1 - images, size, non-root
+
+$ docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}' | grep -E 'REPOSITORY|loantrack'
+REPOSITORY                    TAG           SIZE
+loantrack-frontend            v1            72.2MB
+loantrack-backend             v2            245MB
+loantrack-backend             v1            245MB
+
+$ docker compose exec backend whoami
+app
+
+$ docker compose exec frontend whoami
+nginx
+
+$ docker inspect --format '{{.State.Health.Status}}' loantrack-backend-1
+healthy
+
+## B1 - layer cache: changing a later layer reuses the pip install layer
+
+$ docker build --progress=plain --build-arg APP_VERSION=cache-demo -t loantrack-backend:cache-demo backend 2>&1 | grep -E 'pip install|CACHED|COPY app'
+#3 CACHED
+#6 CACHED
+#8 CACHED
+#9 CACHED
+#10 [builder 4/4] RUN pip install -r /tmp/requirements.txt
+#10 CACHED
+#14 [runtime 5/5] COPY app ./app
+
+## B2 - services, network, volume
+
+$ docker compose ps
+NAME                   IMAGE                                                                     COMMAND                  SERVICE    CREATED          STATUS                    PORTS
+loantrack-backend-1    sha256:c80beab595f1a8ca2de7e59a85b0e9b567a753e2ac7559fe4fb2710a47b596f8   "uvicorn app.main:bu…"   backend    7 minutes ago    Up 7 minutes (healthy)    8000/tcp
+loantrack-db-1         postgres:16.6-alpine                                                      "docker-entrypoint.s…"   db         24 minutes ago   Up 12 minutes (healthy)   5432/tcp
+loantrack-frontend-1   sha256:86e838b137ba9b2cea5829d493405d7a243620e5f696b9746c9446032b62950b   "/docker-entrypoint.…"   frontend   7 minutes ago    Up 7 minutes (healthy)    0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp
+
+$ docker network inspect loantrack-net --format '{{range .Containers}}{{.Name}} {{.IPv4Address}}{{println}}{{end}}'
+loantrack-backend-1 172.19.0.2/16
+loantrack-frontend-1 172.19.0.3/16
+loantrack-db-1 172.19.0.4/16
+
+
+$ docker compose exec backend python -c "import socket; print(socket.gethostbyname('db'))"
+172.19.0.4
+
+$ docker volume ls | grep loantrack
+local     loantrack-pgdata
+
+## C - backend started before the database: retries with backoff, then recovers
+
+$ docker compose up -d --no-deps backend
+ Container loantrack-backend-1  Recreate
+ Container loantrack-backend-1  Recreated
+ Container loantrack-backend-1  Starting
+ Container loantrack-backend-1  Started
+
+$ curl -s -w ' [%{http_code}]\n' localhost:8080/api/readyz
+{"status":"not ready","database":"unreachable","served_by":"61d6b3eaa729"} [503]
+
+$ curl -s -w ' [%{http_code}]\n' localhost:8080/api/healthz
+{"status":"ok","served_by":"61d6b3eaa729","version":"v1"} [200]
+
+$ docker compose up -d --wait db
+ Container loantrack-db-1  Starting
+ Container loantrack-db-1  Started
+ Container loantrack-db-1  Waiting
+ Container loantrack-db-1  Healthy
+
+$ docker compose logs --no-log-prefix backend | grep -E 'loantrack' | tail -12
+2026-11-21 06:13:51,355 INFO    loantrack.api: starting loantrack-backend v1 on 61d6b3eaa729
+2026-11-21 06:13:51,421 WARNING loantrack.db: database not reachable at db:5432 (attempt 1): [Errno -2] Name or service not known - retrying in 0.9s
+2026-11-21 06:13:52,363 WARNING loantrack.db: database not reachable at db:5432 (attempt 2): [Errno -2] Name or service not known - retrying in 1.9s
+2026-11-21 06:13:54,360 WARNING loantrack.db: database not reachable at db:5432 (attempt 3): [Errno -2] Name or service not known - retrying in 4.0s
+2026-11-21 06:13:58,354 INFO    loantrack.db: database connection pool ready after 4 attempt(s)
+
+$ curl -s -w ' [%{http_code}]\n' localhost:8080/api/readyz
+{"status":"ready","database":"reachable","served_by":"61d6b3eaa729"} [200]
+
+## C - a loan added in the UI, seen via psql in the db container
+
+$ psqlc "SELECT id, borrower_name, loan_amount, property_city, status FROM loans WHERE borrower_name = 'Meera Nair'"
+ id | borrower_name | loan_amount | property_city | status  
+----+---------------+-------------+---------------+---------
+ 11 | Meera Nair    |  5600000.00 | Kochi         | PENDING
+(1 row)
+
+
+## C - down then up: data survives
+
+$ psqlc 'SELECT count(*) FROM loans'
+ count 
+-------
+    11
+(1 row)
+
+
+$ docker compose down
+ Container loantrack-frontend-1  Stopping
+ Container loantrack-frontend-1  Stopped
+ Container loantrack-frontend-1  Removing
+ Container loantrack-frontend-1  Removed
+ Container loantrack-backend-1  Stopping
+ Container loantrack-backend-1  Stopped
+ Container loantrack-backend-1  Removing
+ Container loantrack-backend-1  Removed
+ Container loantrack-db-1  Stopping
+ Container loantrack-db-1  Stopped
+ Container loantrack-db-1  Removing
+ Container loantrack-db-1  Removed
+ Network loantrack-net  Removing
+ Network loantrack-net  Removed
+
+$ docker compose up -d --wait
+ Network loantrack-net  Creating
+ Network loantrack-net  Created
+ Container loantrack-db-1  Creating
+ Container loantrack-db-1  Created
+ Container loantrack-backend-1  Creating
+ Container loantrack-backend-1  Created
+ Container loantrack-frontend-1  Creating
+ Container loantrack-frontend-1  Created
+ Container loantrack-db-1  Starting
+ Container loantrack-db-1  Started
+ Container loantrack-db-1  Waiting
+ Container loantrack-db-1  Healthy
+ Container loantrack-backend-1  Starting
+ Container loantrack-backend-1  Started
+ Container loantrack-backend-1  Waiting
+ Container loantrack-backend-1  Healthy
+ Container loantrack-frontend-1  Starting
+ Container loantrack-frontend-1  Started
+ Container loantrack-db-1  Waiting
+ Container loantrack-backend-1  Waiting
+ Container loantrack-frontend-1  Waiting
+ Container loantrack-db-1  Healthy
+ Container loantrack-backend-1  Healthy
+ Container loantrack-frontend-1  Healthy
+
+$ psqlc 'SELECT count(*) FROM loans'
+ count 
+-------
+    11
+(1 row)
+
+
+## C - down -v: the named volume is deleted
+
+$ docker compose down -v 2>&1 | grep -i volume
+ Volume loantrack-pgdata  Removing
+ Volume loantrack-pgdata  Removed
+
+$ docker compose up -d --wait 2>&1 | tail -1
+ Container loantrack-frontend-1  Healthy
+
+$ # rows after down -v (init scripts ran again on the empty volume)
+10 rows, Meera Nair present: false
